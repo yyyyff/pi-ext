@@ -180,19 +180,59 @@ export default function shimmerSpinner(pi: ExtensionAPI) {
 	let lastTokenTime = 0;
 	let thinkingStartTime = 0;
 	let thoughtDurationMs = 0;
+	let pendingQuestionCount = 0;
+	let questionWaitStartTime = 0;
+	let pausedDurationMs = 0;
 
 	function touchToken() {
 		if (timer) lastTokenTime = Date.now();
 	}
 
+	function isWaitingForQuestion(): boolean {
+		return pendingQuestionCount > 0;
+	}
+
+	function beginQuestionWait() {
+		pendingQuestionCount++;
+		if (pendingQuestionCount === 1) {
+			questionWaitStartTime = Date.now();
+			lastTokenTime = Date.now();
+			resetStallState();
+		}
+	}
+
+	function endQuestionWait() {
+		if (pendingQuestionCount <= 0) return;
+		pendingQuestionCount--;
+		if (pendingQuestionCount === 0) {
+			if (questionWaitStartTime > 0) {
+				pausedDurationMs += Date.now() - questionWaitStartTime;
+			}
+			questionWaitStartTime = 0;
+			lastTokenTime = Date.now();
+			resetStallState();
+		}
+	}
+
+	function resetQuestionWaitState() {
+		pendingQuestionCount = 0;
+		questionWaitStartTime = 0;
+		pausedDurationMs = 0;
+	}
+
 	function render(): string {
+		if (isWaitingForQuestion()) {
+			resetStallState();
+			return renderShimmer("等待回答中…", frame, 0) + reset;
+		}
+
 		const timeSinceToken = Date.now() - lastTokenTime;
 		const stall = computeStallIntensity(timeSinceToken);
 
 		const text = `${verb}中…`;
 		const shimmer = renderShimmer(text, frame, stall);
 
-		const elapsed = Date.now() - startTime;
+		const elapsed = Math.max(0, Date.now() - startTime - pausedDurationMs);
 		let suffix = "";
 		if (elapsed > SHOW_TIMER_AFTER_MS) {
 			const parts: string[] = [formatDuration(elapsed)];
@@ -217,6 +257,7 @@ export default function shimmerSpinner(pi: ExtensionAPI) {
 		lastTokenTime = Date.now();
 		thinkingStartTime = 0;
 		thoughtDurationMs = 0;
+		resetQuestionWaitState();
 		resetStallState();
 
 		ctx.ui.setWorkingIndicator({ frames: [...BLUE_DOTS] });
@@ -232,6 +273,7 @@ export default function shimmerSpinner(pi: ExtensionAPI) {
 			clearInterval(timer);
 			timer = null;
 		}
+		resetQuestionWaitState();
 	}
 
 	pi.on("agent_start", async (_event: AgentStartEvent, ctx: ExtensionContext) => {
@@ -252,8 +294,21 @@ export default function shimmerSpinner(pi: ExtensionAPI) {
 		}
 	});
 
-	pi.on("tool_execution_start", async () => touchToken());
-	pi.on("tool_execution_end", async () => touchToken());
+	pi.on("tool_execution_start", async (event) => {
+		if (event.toolName === "question") {
+			beginQuestionWait();
+			return;
+		}
+		touchToken();
+	});
+
+	pi.on("tool_execution_end", async (event) => {
+		if (event.toolName === "question") {
+			endQuestionWait();
+			return;
+		}
+		touchToken();
+	});
 
 	pi.on("agent_end", async (_event: AgentEndEvent, ctx: ExtensionContext) => {
 		stopAnimation();
