@@ -1,6 +1,6 @@
 /**
  * pi-shimmer - Rainbow shimmer spinner with Chinese verbs, stall detection,
- * thinking state, and token estimation.
+ * and thinking state.
  *
  * Derived from pi-shimmer by Jabbslad (MIT) and pi-animations by arpagon (MIT).
  * Rainbow shimmer: sine-wave gradient sweep (magenta → purple → cyan).
@@ -8,10 +8,10 @@
  */
 
 import type {
+	AgentEndEvent,
+	AgentStartEvent,
 	ExtensionAPI,
 	ExtensionContext,
-	AgentStartEvent,
-	AgentEndEvent,
 } from "@earendil-works/pi-coding-agent";
 
 // ═══ Chinese verbs ═══
@@ -55,7 +55,7 @@ const VERBS = [
 ];
 
 function randomVerb(): string {
-	return VERBS[Math.floor(Math.random() * VERBS.length)];
+	return VERBS[Math.floor(Math.random() * VERBS.length)] ?? "思考";
 }
 
 // ═══ Dots spinner (baseline-aligned) ═══
@@ -69,8 +69,10 @@ const bold = "\x1b[1m";
 const nobold = "\x1b[22m";
 const reset = "\x1b[0m";
 
+const dim = (text: string) => `${rgb(140, 140, 140)}${text}${reset}`;
+
 // 蓝色 dots spinner frames (定义在 rgb 之后)
-const BLUE_DOTS = DOTS.map(d => rgb(95, 175, 255) + d + reset);
+const BLUE_DOTS = DOTS.map((d) => rgb(95, 175, 255) + d + reset);
 
 function lerp(a: number, b: number, t: number): number {
 	return Math.round(a + (b - a) * t);
@@ -78,7 +80,9 @@ function lerp(a: number, b: number, t: number): number {
 
 // ═══ Gradient (magenta → purple → cyan) ═══
 
-const PI_GRAD = [
+type RGB = readonly [number, number, number];
+
+const PI_GRAD: readonly RGB[] = [
 	[255, 0, 135],
 	[175, 95, 175],
 	[135, 95, 215],
@@ -87,32 +91,14 @@ const PI_GRAD = [
 	[0, 255, 255],
 ];
 
-const BASE = [200, 200, 200];
-const STALL_RED = [171, 43, 63];
-const STALL_BASE = [140, 60, 60];
+const BASE: RGB = [200, 200, 200];
+const STALL_RED: RGB = [171, 43, 63];
+const STALL_BASE: RGB = [140, 60, 60];
 
 // ═══ Stall tracking ═══
 
 const STALL_START_MS = 3000;
 const STALL_FADE_MS = 2000;
-let stalledIntensity = 0;
-
-function computeStallIntensity(timeSinceToken: number): number {
-	const target = timeSinceToken > STALL_START_MS
-		? Math.min((timeSinceToken - STALL_START_MS) / STALL_FADE_MS, 1)
-		: 0;
-	const diff = target - stalledIntensity;
-	if (Math.abs(diff) < 0.01) {
-		stalledIntensity = target;
-	} else {
-		stalledIntensity += diff * 0.1;
-	}
-	return stalledIntensity;
-}
-
-function resetStallState(): void {
-	stalledIntensity = 0;
-}
 
 // ═══ Shimmer renderer ═══
 
@@ -120,15 +106,17 @@ function renderShimmer(text: string, frame: number, stall: number): string {
 	const baseR = lerp(BASE[0], STALL_BASE[0], stall);
 	const baseG = lerp(BASE[1], STALL_BASE[1], stall);
 	const baseB = lerp(BASE[2], STALL_BASE[2], stall);
+	const chars = Array.from(text);
 
 	let line = "";
-	for (let i = 0; i < text.length; i++) {
+	for (let i = 0; i < chars.length; i++) {
+		const ch = chars[i] ?? "";
 		const wave = Math.sin((i - frame * 0.3) * 0.8);
 		if (wave > 0.3) {
 			const intensity = (wave - 0.3) / 0.7;
 			const gi = Math.floor((i + frame * 0.5) % (PI_GRAD.length * 2));
 			const gIdx = gi < PI_GRAD.length ? gi : PI_GRAD.length * 2 - 1 - gi;
-			const gc = PI_GRAD[Math.min(gIdx, PI_GRAD.length - 1)];
+			const gc = PI_GRAD[Math.min(gIdx, PI_GRAD.length - 1)] ?? PI_GRAD[0]!;
 
 			const gcR = lerp(gc[0], STALL_RED[0], stall);
 			const gcG = lerp(gc[1], STALL_RED[1], stall);
@@ -137,9 +125,9 @@ function renderShimmer(text: string, frame: number, stall: number): string {
 			const r = lerp(baseR, gcR, intensity);
 			const g = lerp(baseG, gcG, intensity);
 			const b = lerp(baseB, gcB, intensity);
-			line += bold + rgb(r, g, b) + text[i] + nobold;
+			line += bold + rgb(r, g, b) + ch + nobold;
 		} else {
-			line += rgb(baseR, baseG, baseB) + text[i];
+			line += rgb(baseR, baseG, baseB) + ch;
 		}
 	}
 	return line + reset;
@@ -148,28 +136,30 @@ function renderShimmer(text: string, frame: number, stall: number): string {
 // ═══ Format helpers ═══
 
 function formatDuration(ms: number): string {
-	const s = Math.floor(ms / 1000);
-	if (s < 60) return `${s}s`;
-	const m = Math.floor(s / 60);
-	return `${m}m ${(s % 60).toString().padStart(2, "0")}s`;
+	const totalSeconds = Math.floor(ms / 1000);
+	if (totalSeconds < 60) return `${totalSeconds}s`;
+
+	const seconds = totalSeconds % 60;
+	const totalMinutes = Math.floor(totalSeconds / 60);
+	if (totalMinutes < 60) {
+		return `${totalMinutes}m ${seconds.toString().padStart(2, "0")}s`;
+	}
+
+	const hours = Math.floor(totalMinutes / 60);
+	const minutes = totalMinutes % 60;
+	return `${hours}h ${minutes}m ${seconds.toString().padStart(2, "0")}s`;
 }
 
 // ═══ Extension ═══
 
 const SHOW_TIMER_AFTER_MS = 30000;
 
-type MessageUpdateLike = {
-	assistantMessageEvent: {
-		type: string;
-	};
-};
-
-function isThinkingStart(event: MessageUpdateLike): boolean {
-	return event.assistantMessageEvent.type === "thinking_start";
+function isThinkingStart(type: string | undefined): boolean {
+	return type === "thinking_start";
 }
 
-function isThinkingEnd(event: MessageUpdateLike): boolean {
-	return event.assistantMessageEvent.type === "thinking_end";
+function isThinkingEnd(type: string | undefined): boolean {
+	return type === "thinking_end";
 }
 
 export default function shimmerSpinner(pi: ExtensionAPI) {
@@ -183,33 +173,63 @@ export default function shimmerSpinner(pi: ExtensionAPI) {
 	let pendingQuestionCount = 0;
 	let questionWaitStartTime = 0;
 	let pausedDurationMs = 0;
+	let activeTools = new Map<string, string>();
+	let stalledIntensity = 0;
 
-	function touchToken() {
-		if (timer) lastTokenTime = Date.now();
+	function computeStallIntensity(timeSinceToken: number): number {
+		const target =
+			timeSinceToken > STALL_START_MS
+				? Math.min((timeSinceToken - STALL_START_MS) / STALL_FADE_MS, 1)
+				: 0;
+		const diff = target - stalledIntensity;
+		if (Math.abs(diff) < 0.01) {
+			stalledIntensity = target;
+		} else {
+			stalledIntensity += diff * 0.1;
+		}
+		return stalledIntensity;
+	}
+
+	function resetStallState(): void {
+		stalledIntensity = 0;
+	}
+
+	function touchToken(now = Date.now()) {
+		if (timer) lastTokenTime = now;
 	}
 
 	function isWaitingForQuestion(): boolean {
 		return pendingQuestionCount > 0;
 	}
 
-	function beginQuestionWait() {
+	function isExecutingTool(): boolean {
+		return activeTools.size > 0;
+	}
+
+	function activeToolLabel(): string | undefined {
+		if (activeTools.size === 0) return undefined;
+		if (activeTools.size > 1) return `多个工具 ×${activeTools.size}`;
+		return activeTools.values().next().value;
+	}
+
+	function beginQuestionWait(now = Date.now()) {
 		pendingQuestionCount++;
 		if (pendingQuestionCount === 1) {
-			questionWaitStartTime = Date.now();
-			lastTokenTime = Date.now();
+			questionWaitStartTime = now;
+			lastTokenTime = now;
 			resetStallState();
 		}
 	}
 
-	function endQuestionWait() {
+	function endQuestionWait(now = Date.now()) {
 		if (pendingQuestionCount <= 0) return;
 		pendingQuestionCount--;
 		if (pendingQuestionCount === 0) {
 			if (questionWaitStartTime > 0) {
-				pausedDurationMs += Date.now() - questionWaitStartTime;
+				pausedDurationMs += now - questionWaitStartTime;
 			}
 			questionWaitStartTime = 0;
-			lastTokenTime = Date.now();
+			lastTokenTime = now;
 			resetStallState();
 		}
 	}
@@ -220,19 +240,42 @@ export default function shimmerSpinner(pi: ExtensionAPI) {
 		pausedDurationMs = 0;
 	}
 
-	function render(): string {
+	function beginToolExecution(toolCallId: string, toolName: string, now = Date.now()) {
+		activeTools.set(toolCallId, toolName);
+		lastTokenTime = now;
+		resetStallState();
+	}
+
+	function endToolExecution(toolCallId: string, now = Date.now()) {
+		activeTools.delete(toolCallId);
+		lastTokenTime = now;
+		resetStallState();
+	}
+
+	function resetToolExecutionState() {
+		activeTools.clear();
+	}
+
+	function render(now = Date.now()): string {
 		if (isWaitingForQuestion()) {
 			resetStallState();
 			return renderShimmer("等待回答中…", frame, 0) + reset;
 		}
 
-		const timeSinceToken = Date.now() - lastTokenTime;
+		if (isExecutingTool()) {
+			resetStallState();
+			const toolLabel = activeToolLabel();
+			const suffix = toolLabel ? ` ${dim(`(${toolLabel})`)}` : "";
+			return renderShimmer("执行工具中…", frame, 0) + suffix + reset;
+		}
+
+		const timeSinceToken = now - lastTokenTime;
 		const stall = computeStallIntensity(timeSinceToken);
 
 		const text = `${verb}中…`;
 		const shimmer = renderShimmer(text, frame, stall);
 
-		const elapsed = Math.max(0, Date.now() - startTime - pausedDurationMs);
+		const elapsed = Math.max(0, now - startTime - pausedDurationMs);
 		let suffix = "";
 		if (elapsed > SHOW_TIMER_AFTER_MS) {
 			const parts: string[] = [formatDuration(elapsed)];
@@ -243,7 +286,7 @@ export default function shimmerSpinner(pi: ExtensionAPI) {
 				parts.push(`thought ${Math.round(thoughtDurationMs / 1000)}s`);
 			}
 
-			suffix = " " + rgb(140, 140, 140) + "(" + parts.join(" · ") + ")";
+			suffix = ` ${dim(`(${parts.join(" · ")})`)}`;
 		}
 
 		return shimmer + suffix + reset;
@@ -251,16 +294,19 @@ export default function shimmerSpinner(pi: ExtensionAPI) {
 
 	function startAnimation(ctx: ExtensionContext) {
 		stopAnimation();
+		const now = Date.now();
 		frame = 0;
 		verb = randomVerb();
-		startTime = Date.now();
-		lastTokenTime = Date.now();
+		startTime = now;
+		lastTokenTime = now;
 		thinkingStartTime = 0;
 		thoughtDurationMs = 0;
 		resetQuestionWaitState();
+		resetToolExecutionState();
 		resetStallState();
 
-		ctx.ui.setWorkingIndicator({ frames: [...BLUE_DOTS] });
+		ctx.ui.setWorkingIndicator({ frames: BLUE_DOTS });
+		ctx.ui.setWorkingMessage(render(now));
 
 		timer = setInterval(() => {
 			frame++;
@@ -274,6 +320,8 @@ export default function shimmerSpinner(pi: ExtensionAPI) {
 			timer = null;
 		}
 		resetQuestionWaitState();
+		resetToolExecutionState();
+		resetStallState();
 	}
 
 	pi.on("agent_start", async (_event: AgentStartEvent, ctx: ExtensionContext) => {
@@ -283,31 +331,40 @@ export default function shimmerSpinner(pi: ExtensionAPI) {
 
 	pi.on("message_update", async (event) => {
 		if (!timer || event.message.role !== "assistant") return;
-		lastTokenTime = Date.now();
+		const now = Date.now();
+		lastTokenTime = now;
 
-		if (isThinkingStart(event)) {
-			thinkingStartTime = Date.now();
+		const updateType = event.assistantMessageEvent?.type;
+		if (isThinkingStart(updateType)) {
+			thinkingStartTime = now;
 			thoughtDurationMs = 0;
-		} else if (isThinkingEnd(event) && thinkingStartTime > 0) {
-			thoughtDurationMs = Date.now() - thinkingStartTime;
+		} else if (isThinkingEnd(updateType) && thinkingStartTime > 0) {
+			thoughtDurationMs = now - thinkingStartTime;
 			thinkingStartTime = 0;
 		}
 	});
 
 	pi.on("tool_execution_start", async (event) => {
+		const now = Date.now();
 		if (event.toolName === "question") {
-			beginQuestionWait();
+			beginQuestionWait(now);
 			return;
 		}
+		beginToolExecution(event.toolCallId, event.toolName, now);
+	});
+
+	pi.on("tool_execution_update", async (event) => {
+		if (event.toolName === "question") return;
 		touchToken();
 	});
 
 	pi.on("tool_execution_end", async (event) => {
+		const now = Date.now();
 		if (event.toolName === "question") {
-			endQuestionWait();
+			endQuestionWait(now);
 			return;
 		}
-		touchToken();
+		endToolExecution(event.toolCallId, now);
 	});
 
 	pi.on("agent_end", async (_event: AgentEndEvent, ctx: ExtensionContext) => {
