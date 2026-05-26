@@ -1,0 +1,14 @@
+# dependencies
+node_modules/
+
+# build / temp
+.DS_Store
+*.log
+.tmp/
+tmp/
+dist/
+build/
+
+# pi local state
+.pi/sessions/
+.snow/
